@@ -92,6 +92,12 @@ def datetime_to_utc(ts):
 
     return ts.astimezone(dateutil.tz.tzutc())
 
+def tomorrow():
+    """Return tomorrow date object.
+
+    :returns: a date object"""
+    return datetime.date.today() + datetime.timedelta(days=1)
+
 
 def str_to_datetime(ts):
     """Format a string to a datetime object.
