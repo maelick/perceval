@@ -32,6 +32,7 @@ from ..cache import Cache
 from ..errors import BackendError, CacheError
 from ..utils import (DEFAULT_DATETIME,
                      datetime_to_utc,
+                     tomorrow,
                      str_to_datetime,
                      urljoin)
 
@@ -72,26 +73,33 @@ class BugzillaREST(Backend):
                                          api_token=api_token)
 
     @metadata
-    def fetch(self, from_date=DEFAULT_DATETIME):
+    def fetch(self, from_date=DEFAULT_DATETIME,
+              created_after=None, created_before=None):
         """Fetch the bugs from the repository.
 
         The method retrieves, from a Bugzilla repository, the bugs
         updated since the given date.
 
         :param from_date: obtain bugs updated since this date
+        :param created_after: obtains bugs created since this date
+        :param created_before: obtains bugs created before this date
 
         :returns: a generator of bugs
         """
         if not from_date:
             from_date = DEFAULT_DATETIME
 
-        logger.info("Looking for bugs: '%s' updated from '%s'",
-                    self.url, str(from_date))
+        dates = ((from_date, "updated from '%s'"),
+                 (created_after, "created after '%s'"),
+                 (created_before, "created before '%s'"))
+        logger.info("Looking for bugs: '%s' %s",
+                    self.url, ', '.join([s % str(d) for d, s in dates if d]))
 
         self._purge_cache_queue()
 
         nbugs = 0
-        for bug in self.__fetch_and_parse_bugs(from_date):
+        for bug in self.__fetch_and_parse_bugs(from_date, created_after,
+                                               created_before):
             nbugs += 1
             yield bug
 
@@ -119,14 +127,17 @@ class BugzillaREST(Backend):
         logger.info("Retrieval process completed: %s bugs retrieved from cache",
                     nbugs)
 
-    def __fetch_and_parse_bugs(self, from_date):
+    def __fetch_and_parse_bugs(self, from_date, created_after, created_before):
         max_contents = min(MAX_CONTENTS, self.max_bugs)
         offset = 0
 
         while True:
             logger.debug("Fetching and parsing bugs from: %s, offset: %s, limit: %s ",
                          str(from_date), offset, self.max_bugs)
-            raw_bugs = self.client.bugs(from_date=from_date, offset=offset,
+            raw_bugs = self.client.bugs(from_date=from_date,
+                                        created_after=created_after,
+                                        created_before=created_before,
+                                        offset=offset,
                                         max_bugs=self.max_bugs)
             self._push_cache_queue(raw_bugs)
 
@@ -361,11 +372,14 @@ class BugzillaRESTClient:
         data = json.loads(r)
         self.api_token = data['token']
 
-    def bugs(self, from_date=DEFAULT_DATETIME, offset=None, max_bugs=MAX_BUGS):
+    def bugs(self, from_date=DEFAULT_DATETIME, created_after=None,
+             created_before=None, offset=None, max_bugs=MAX_BUGS):
         """Get the information of a list of bugs.
 
         :param from_date: retrieve bugs that where updated from that date;
             dates are converted to UTC
+        :param created_after: obtains bugs created since this date
+        :param created_before: obtains bugs created before this date
         :param offset: starting position for the search; i.e to return 11th
             element, set this value to 10.
         :param max_bugs: maximum number of bugs to reteurn per query
@@ -379,6 +393,20 @@ class BugzillaRESTClient:
             self.PORDER : self.VCHANGE_DATE_ORDER,
             self.PINCLUDE_FIELDS : self.VINCLUDE_ALL
         }
+
+        if created_after:
+            date = datetime_to_utc(created_after)
+            date = date.strftime("%Y-%m-%dT%H:%M:%SZ")
+            params["f1"] = "creation_ts"
+            params["o1"] = "greaterthaneq"
+            params["v1"] = date
+
+        if created_before:
+            date = datetime_to_utc(created_before)
+            date = date.strftime("%Y-%m-%dT%H:%M:%SZ")
+            params["f2"] = "creation_ts"
+            params["o2"] = "lessthan"
+            params["v2"] = date
 
         if offset:
             params[self.POFFSET] = offset
@@ -467,6 +495,8 @@ class BugzillaRESTCommand(BackendCommand):
         self.backend_token = self.parsed_args.backend_token
         self.max_bugs = self.parsed_args.max_bugs
         self.from_date = str_to_datetime(self.parsed_args.from_date)
+        self.created_after = str_to_datetime(self.parsed_args.created_after)
+        self.created_before = str_to_datetime(self.parsed_args.created_before)
         self.tag = self.parsed_args.tag
         self.outfile = self.parsed_args.outfile
 
@@ -505,7 +535,9 @@ class BugzillaRESTCommand(BackendCommand):
         if self.parsed_args.fetch_cache:
             bugs = self.backend.fetch_from_cache()
         else:
-            bugs = self.backend.fetch(from_date=self.from_date)
+            bugs = self.backend.fetch(from_date=self.from_date,
+                                      created_after=self.created_after,
+                                      created_before=self.created_before)
 
         try:
             for bug in bugs:
@@ -530,6 +562,12 @@ class BugzillaRESTCommand(BackendCommand):
         group.add_argument('--max-bugs', dest='max_bugs',
                            type=int, default=MAX_BUGS,
                            help="Maximum number of bugs requested on the same query")
+        group.add_argument('--created-after', dest='created_after',
+                           default='1970-01-01',
+                           help="fetch bugs created after this date")
+        group.add_argument('--created-before', dest='created_before',
+                           default=str(tomorrow()),
+                           help="fetch bugs created before this date")
 
         # Required arguments
         parser.add_argument('url',

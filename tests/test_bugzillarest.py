@@ -485,14 +485,23 @@ class TestBugzillaRESTClient(unittest.TestCase):
 
         # Call API with parameters
         from_date = datetime.datetime(2016, 6, 7, 0, 0, 0)
+        created_after = datetime.datetime(2016, 1, 1, 0, 0, 0)
+        created_before = datetime.datetime(2017, 1, 1, 0, 0, 0)
 
         client = BugzillaRESTClient(BUGZILLA_SERVER_URL)
-        response = client.bugs(from_date=from_date, offset=100, max_bugs=5)
+        response = client.bugs(from_date=from_date, created_after=created_after,
+                               created_before=created_before, offset=100, max_bugs=5)
 
         self.assertEqual(response, body)
 
         expected = {
                     'last_change_time' : ['2016-06-07T00:00:00Z'],
+                    'f1' : ['creation_ts'],
+                    'o1' : ['greaterthan'],
+                    'v1' : ['2016-01-01T00:00:00Z'],
+                    'f2' : ['creation_ts'],
+                    'o2' : ['lessthan'],
+                    'v2' : ['2017-01-01T00:00:00Z'],
                     'offset' : ['100'],
                     'limit' : ['5'],
                     'order' : ['changeddate'],
@@ -604,6 +613,8 @@ class TestBugzillaRESTCommand(unittest.TestCase):
         args = ['--backend-user', 'jsmith@example.com',
                 '--backend-password', '1234',
                 '--max-bugs', '10', '--tag', 'test',
+                '--created-after', '2015-01-01',
+                '--created-before', '2016-01-01',
                 BUGZILLA_SERVER_URL]
 
         cmd = BugzillaRESTCommand(*args)
@@ -611,7 +622,8 @@ class TestBugzillaRESTCommand(unittest.TestCase):
         self.assertEqual(cmd.parsed_args.backend_user, 'jsmith@example.com')
         self.assertEqual(cmd.parsed_args.backend_password, '1234')
         self.assertEqual(cmd.parsed_args.max_bugs, 10)
-        self.assertEqual(cmd.parsed_args.tag, 'test')
+        self.assertEqual(cmd.parsed_args.created_after, '2015-01-01')
+        self.assertEqual(cmd.parsed_args.created_before, '2016-01-01')
         self.assertEqual(cmd.parsed_args.url, BUGZILLA_SERVER_URL)
         self.assertIsInstance(cmd.backend, BugzillaREST)
 
