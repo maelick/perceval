@@ -35,7 +35,7 @@ import requests
 from ..backend import Backend, BackendCommand, metadata
 from ..cache import Cache
 from ..errors import BackendError, CacheError, ParseError
-from ..utils import DEFAULT_DATETIME, str_to_datetime, xml_to_dict
+from ..utils import DEFAULT_DATETIME, tomorrow, str_to_datetime, xml_to_dict
 
 
 MAX_BUGS = 200 # Maximum number of bugs per query
@@ -70,25 +70,33 @@ class Bugzilla(Backend):
         self.client = BugzillaClient(url, user=user, password=password)
 
     @metadata
-    def fetch(self, from_date=DEFAULT_DATETIME):
+    def fetch(self, from_date=DEFAULT_DATETIME, created_after=None,
+              created_before=None):
         """Fetch the bugs from the repository.
 
         The method retrieves, from a Bugzilla repository, the bugs
         updated since the given date.
 
         :param from_date: obtain bugs updated since this date
+        :param created_after: obtains bugs created since this date
+        :param created_before: obtains bugs created before this date
 
         :returns: a generator of bugs
         """
         if not from_date:
             from_date = DEFAULT_DATETIME
 
-        logger.info("Looking for bugs: '%s' updated from '%s'",
-                    self.url, str(from_date))
+        dates = ((from_date, "updated from '%s'"),
+                 (created_after, "created after '%s'"),
+                 (created_before, "created before '%s'"))
+        logger.info("Looking for bugs: '%s' %s",
+                    self.url, ', '.join([s % str(d) for d, s in dates if d]))
 
         self._purge_cache_queue()
 
-        buglist = [bug for bug in self.__fetch_buglist(from_date)]
+        buglist = [bug for bug in self.__fetch_buglist(from_date,
+                                                       created_after,
+                                                       created_before)]
 
         nbugs = 0
         tbugs = len(buglist)
@@ -159,8 +167,10 @@ class Bugzilla(Backend):
         logger.info("Retrieval process completed: %s bugs retrieved from cache",
                     nbugs)
 
-    def __fetch_buglist(self, from_date):
-        buglist = self.__fetch_and_parse_buglist_page(from_date)
+    def __fetch_buglist(self, from_date, created_after, created_before):
+        buglist = self.__fetch_and_parse_buglist_page(from_date,
+                                                      created_after,
+                                                      created_before)
 
         while buglist:
             bug = buglist.pop(0)
@@ -173,11 +183,19 @@ class Bugzilla(Backend):
             if not buglist:
                 from_date = str_to_datetime(last_date)
                 from_date += datetime.timedelta(seconds=1)
-                buglist = self.__fetch_and_parse_buglist_page(from_date)
+                buglist = self.__fetch_and_parse_buglist_page(from_date,
+                                                              created_after,
+                                                              created_before)
 
-    def __fetch_and_parse_buglist_page(self, from_date):
-        logger.debug("Fetching and parsing buglist page from %s", str(from_date))
-        raw_csv = self.client.buglist(from_date=from_date)
+    def __fetch_and_parse_buglist_page(self, from_date, created_after, created_before):
+        dates = ((from_date, "from '%s'"),
+                 (created_after, "created after '%s'"),
+                 (created_before, "created before '%s'"))
+        logger.debug("Fetching and parsing buglist page %s",
+                     ', '.join([s % str(d) for d, s in dates if d]))
+        raw_csv = self.client.buglist(from_date=from_date,
+                                      created_after=created_after,
+                                      created_before=created_before)
         buglist = self.parse_buglist(raw_csv)
         return [bug for bug in buglist]
 
@@ -376,6 +394,8 @@ class BugzillaCommand(BackendCommand):
         self.backend_password = self.parsed_args.backend_password
         self.max_bugs = self.parsed_args.max_bugs
         self.from_date = str_to_datetime(self.parsed_args.from_date)
+        self.created_after = str_to_datetime(self.parsed_args.created_after)
+        self.created_before = str_to_datetime(self.parsed_args.created_before)
         self.tag = self.parsed_args.tag
         self.outfile = self.parsed_args.outfile
 
@@ -413,7 +433,9 @@ class BugzillaCommand(BackendCommand):
         if self.parsed_args.fetch_cache:
             bugs = self.backend.fetch_from_cache()
         else:
-            bugs = self.backend.fetch(from_date=self.from_date)
+            bugs = self.backend.fetch(from_date=self.from_date,
+                                      created_after=self.created_after,
+                                      created_before=self.created_before)
 
         try:
             for bug in bugs:
@@ -438,6 +460,12 @@ class BugzillaCommand(BackendCommand):
         group.add_argument('--max-bugs', dest='max_bugs',
                            type=int, default=MAX_BUGS,
                            help="Maximum number of bugs requested on the same query")
+        group.add_argument('--created-after', dest='created_after',
+                           default='1970-01-01',
+                           help="fetch bugs created after this date")
+        group.add_argument('--created-before', dest='created_before',
+                           default=str(tomorrow()),
+                           help="fetch bugs created before this date")
 
         # Required arguments
         parser.add_argument('url',
@@ -557,10 +585,13 @@ class BugzillaClient:
 
         return response
 
-    def buglist(self, from_date=DEFAULT_DATETIME):
+    def buglist(self, from_date=DEFAULT_DATETIME, created_after=None,
+                created_before=None):
         """Get a summary of bugs in CSV format.
 
         :param from_date: retrieve bugs that where updated from that date
+        :param created_after: obtains bugs created since this date
+        :param created_before: obtains bugs created before this date
         """
         if not self.version:
             self.version = self.__fetch_version()
@@ -570,13 +601,25 @@ class BugzillaClient:
         else:
             order = 'changeddate'
 
-        date = from_date.strftime("%Y-%m-%d %H:%M:%S")
+        date = from_date.strftime("%Y-%m-%d %H:%M:%SZ")
 
         params = {
             self.PCHFIELD_FROM : date,
             self.PCTYPE : self.CTYPE_CSV,
             self.PORDER : order
         }
+
+        if created_after:
+            date = datetime_to_utc(created_after).strftime("%Y-%m-%dT%H:%M:%SZ")
+            params["f1"] = "creation_ts"
+            params["o1"] = "greaterthaneq"
+            params["v1"] = date
+
+        if created_before:
+            date = datetime_to_utc(created_before).strftime("%Y-%m-%dT%H:%M:%SZ")
+            params["f2"] = "creation_ts"
+            params["o2"] = "lessthan"
+            params["v2"] = date
 
         response = self.call(self.CGI_BUGLIST, params)
 
