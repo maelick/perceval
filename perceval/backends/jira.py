@@ -285,6 +285,7 @@ class JiraClient:
                     'jql': self.__build_jql_query(from_date),
                     'startAt': start_at,
                     'expand': self.EXPAND,
+                    'fields': '*all',
                     'maxResults': self.max_issues
         }
         return payload
