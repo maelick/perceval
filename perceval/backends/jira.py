@@ -24,6 +24,7 @@
 import json
 import logging
 import os.path
+import time
 
 import requests
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
@@ -344,6 +345,7 @@ class JiraClient:
                 data = req.json()
                 start_at += nissues
                 issues = req.text
+                time.sleep(10)
                 self.__log_status(start_at, tissues)
 
     def get_fields(self):
